@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Steam Economy Enhancer
+// @name         Steam Economy Enhancer Fork
 // @icon         data:image/svg+xml,%0A%3Csvg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" clip-rule="evenodd" viewBox="0 0 267 267"%3E%3Ccircle cx="133.3" cy="133.3" r="133.3" fill="%2326566c"/%3E%3Cpath fill="%23ebebeb" fill-rule="nonzero" d="m50 133 83-83 84 83-84 84-83-84Zm83 62 62-61-62-62v123Z"/%3E%3C/svg%3E
 // @namespace    https://github.com/Nuklon
 // @author       Nuklon
@@ -60,7 +60,7 @@
 
     let numberOfFailedRequests = 0;
 
-    const enableConsoleLog = false;
+    const enableConsoleLog = true;
 
     const country = typeof unsafeWindow.g_strCountryCode !== 'undefined' ? unsafeWindow.g_strCountryCode : undefined;
     const isLoggedIn = typeof unsafeWindow.g_rgWalletInfo !== 'undefined' && unsafeWindow.g_rgWalletInfo != null || typeof unsafeWindow.g_bLoggedIn !== 'undefined' && unsafeWindow.g_bLoggedIn;
@@ -484,7 +484,8 @@
         let calculatedPrice = 0;
         if (shouldUseBuyOrder && buyPrice !== -2) {
             calculatedPrice = buyPrice;
-        } else if (historyPrice < listingPrice || !shouldUseAverage) {
+        // } else if (historyPrice < listingPrice || !shouldUseAverage) {
+        } else if (!shouldUseAverage) {
             calculatedPrice = listingPrice;
         } else {
             calculatedPrice = historyPrice;
@@ -2212,7 +2213,7 @@
             const isBoosterPack = selectedItem.name.toLowerCase().endsWith('booster pack');
             if (isBoosterPack) {
                 const tradingCardsUrl = `/market/search?q=&category_753_Game%5B%5D=tag_app_${selectedItem.market_fee_app}&category_753_item_class%5B%5D=tag_item_class_2&appid=753`;
-                const communityHeader = $(`h1`, item_info).next().find('span').eq(0);
+                const communityHeader = $('h1', item_info).next().find('span').eq(0);
                 communityHeader.replaceWith(`<a href="${tradingCardsUrl}"><span>${communityHeader.text()}</span></a>`);
             }
 
@@ -3944,7 +3945,7 @@
             <div>
                 Calculate prices as the:&nbsp;
                 <select id="${SETTING_PRICE_ALGORITHM}">
-                    <option value="1"${getSettingWithDefault(SETTING_PRICE_ALGORITHM) == 1 ? 'selected="selected"' : ''}>Maximum of the average history and lowest sell listing</option>
+                    <option value="1"${getSettingWithDefault(SETTING_PRICE_ALGORITHM) == 1 ? 'selected="selected"' : ''}>Average history</option>
                     <option value="2" ${getSettingWithDefault(SETTING_PRICE_ALGORITHM) == 2 ? 'selected="selected"' : ''}>Lowest sell listing</option>
                     <option value="3" ${getSettingWithDefault(SETTING_PRICE_ALGORITHM) == 3 ? 'selected="selected"' : ''}>Highest current buy order or lowest sell listing</option>
                 </select>
