@@ -4,7 +4,7 @@
 // @namespace    https://github.com/Nuklon
 // @author       Nuklon
 // @license      MIT
-// @version      7.1.22
+// @version      7.3.0
 // @description  Enhances the Steam Inventory and Steam Market.
 // @match        https://steamcommunity.com/id/*/inventory*
 // @match        https://steamcommunity.com/profiles/*/inventory*
@@ -96,6 +96,27 @@
             : 'US';
 
     const currencyCode = unsafeWindow.GetCurrencyCode(currencyId);
+
+    // Currencies affected by the December 2025 Steam Market rule changes.
+    // These currencies use round instead of floor.
+    // Reference: https://steamcommunity.com/groups/community_market/discussions/0/682988196226679356
+    // Alternative approach: Check currency code instead of ID for better reliability
+    const CURRENCY_CODES_TO_ROUND = [
+        'JPY',  // Japanese Yen (unit: 1)
+        'IDR',  // Indonesian Rupiah (unit: 1)
+        'UAH',  // Ukrainian Hryvnia (unit: 1)
+        'CLP',  // Chilean Peso (unit: 1)
+        'COP',  // Colombian Peso (unit: 1)
+        'TWD',  // New Taiwan Dollar (unit: 1)
+        'KZT',  // Kazakhstani Tenge (unit: 1)
+        'CRC',  // Costa Rican Colón (unit: 5)
+        'UYU',  // Uruguayan Peso (unit: 1)
+        'KRW',  // South Korean Won (unit: 10)
+        'VND',  // Vietnamese Dong (unit: 500)
+    ];
+
+    // Check if the current currency uses round for fees.
+    const useRound = CURRENCY_CODES_TO_ROUND.includes(currencyCode);
 
     function SteamMarket(appContext, inventoryUrl, walletInfo) {
         this.appContext = appContext;
@@ -420,24 +441,24 @@
     }
 
     // Calculates the listing price, before the fee.
-    function calculateListingPriceBeforeFees(histogram) {
-        if (typeof histogram === 'undefined' ||
-            histogram == null ||
-            histogram.lowest_sell_order == null ||
-            histogram.sell_order_graph == null) {
+    function calculateListingPriceBeforeFees(orderbook) {
+        if (typeof orderbook === 'undefined' ||
+            orderbook == null ||
+            orderbook.lowest_sell_order == null ||
+            orderbook.sell_order_graph == null) {
             return 0;
         }
 
-        let listingPrice = market.getPriceBeforeFees(histogram.lowest_sell_order);
+        let listingPrice = market.getPriceBeforeFees(orderbook.lowest_sell_order);
 
         const shouldIgnoreLowestListingOnLowQuantity = getSettingWithDefault(SETTING_PRICE_IGNORE_LOWEST_Q) == 1;
 
-        if (shouldIgnoreLowestListingOnLowQuantity && histogram.sell_order_graph.length >= 2) {
-            const listingPrice2ndLowest = market.getPriceBeforeFees(histogram.sell_order_graph[1][0] * 100);
+        if (shouldIgnoreLowestListingOnLowQuantity && orderbook.sell_order_graph.length >= 2) {
+            const listingPrice2ndLowest = market.getPriceBeforeFees(orderbook.sell_order_graph[1][0] * 100);
 
             if (listingPrice2ndLowest > listingPrice) {
-                const numberOfListingsLowest = histogram.sell_order_graph[0][1];
-                const numberOfListings2ndLowest = histogram.sell_order_graph[1][1];
+                const numberOfListingsLowest = orderbook.sell_order_graph[0][1];
+                const numberOfListings2ndLowest = orderbook.sell_order_graph[1][1];
 
                 const percentageLower = 100 * (numberOfListingsLowest / numberOfListings2ndLowest);
 
@@ -461,20 +482,20 @@
         return listingPrice;
     }
 
-    function calculateBuyOrderPriceBeforeFees(histogram) {
-        if (typeof histogram === 'undefined') {
+    function calculateBuyOrderPriceBeforeFees(orderbook) {
+        if (typeof orderbook === 'undefined') {
             return 0;
         }
 
-        return market.getPriceBeforeFees(histogram.highest_buy_order);
+        return market.getPriceBeforeFees(orderbook.highest_buy_order);
     }
 
     // Calculate the sell price based on the history and listings.
     // applyOffset specifies whether the price offset should be applied when the listings are used to determine the price.
-    function calculateSellPriceBeforeFees(history, histogram, applyOffset, minPriceBeforeFees, maxPriceBeforeFees) {
+    function calculateSellPriceBeforeFees(history, orderbook, applyOffset, minPriceBeforeFees, maxPriceBeforeFees) {
         const historyPrice = calculateAverageHistoryPriceBeforeFees(history);
-        const listingPrice = calculateListingPriceBeforeFees(histogram);
-        const buyPrice = calculateBuyOrderPriceBeforeFees(histogram);
+        const listingPrice = calculateListingPriceBeforeFees(orderbook);
+        const buyPrice = calculateBuyOrderPriceBeforeFees(orderbook);
 
         const shouldUseAverage = getSettingWithDefault(SETTING_PRICE_ALGORITHM) == 1;
         const shouldUseBuyOrder = getSettingWithDefault(SETTING_PRICE_ALGORITHM) == 3;
@@ -510,8 +531,8 @@
 
 
         // In case there's a buy order higher than the calculated price.
-        if (typeof histogram !== 'undefined' && histogram != null && histogram.highest_buy_order != null) {
-            const buyOrderPrice = market.getPriceBeforeFees(histogram.highest_buy_order);
+        if (typeof orderbook !== 'undefined' && orderbook != null && orderbook.highest_buy_order != null) {
+            const buyOrderPrice = market.getPriceBeforeFees(orderbook.highest_buy_order);
             if (buyOrderPrice > calculatedPrice) {
                 calculatedPrice = buyOrderPrice;
             }
@@ -816,87 +837,52 @@
         );
     };
 
-    // Get the item name id from a market item.
-    //
-    // This id never changes so we can store this in the persistent storage.
-    SteamMarket.prototype.getMarketItemNameId = function (item, callback) {
-        try {
-            const market_name = getMarketHashName(item);
-            if (market_name == null) {
-                callback(ERROR_FAILED);
-                return;
-            }
-
-            const appid = item.appid;
-            const storage_hash = `itemnameid_${appid}+${market_name}`;
-
-            storagePersistent.getItem(storage_hash).
-                then((value) => {
-                    if (value != null) {
-                        callback(ERROR_SUCCESS, value);
-                    } else {
-                        return market.getCurrentMarketItemNameId(appid, market_name, callback);
-                    }
-                }).
-                catch(() => {
-                    return market.getCurrentMarketItemNameId(appid, market_name, callback);
-                });
-        } catch {
-            return callback(ERROR_FAILED);
+    function buildOrderBook(data) {
+        if (!data || !data.success || !data.data) {
+            return null;
         }
-    };
 
-    // Get the item name id from a market item.
-    SteamMarket.prototype.getCurrentMarketItemNameId = function (appid, market_name, callback) {
-        const url = `${window.location.origin}/market/listings/${appid}/${encodeURIComponent(market_name)}`;
+        const orderBook = data.data;
 
-        const options = { method: 'GET' };
+        const buildGraph = (compactOrders) => {
+            const graph = [];
 
-        request(
-            url,
-            options,
-            (error, data) => {
-                if (error) {
-                    callback(ERROR_FAILED);
-                    return;
-                }
-
-                const matches = (/Market_LoadOrderSpread\( (\d+) \);/).exec(data || '');
-                if (matches == null) {
-                    callback(ERROR_DATA);
-                    return;
-                }
-
-                const item_nameid = matches[1];
-
-                // Store the item name id in the persistent storage.
-                const storage_hash = `itemnameid_${appid}+${market_name}`;
-                storagePersistent.setItem(storage_hash, item_nameid);
-
-                callback(ERROR_SUCCESS, item_nameid);
+            if (!Array.isArray(compactOrders)) {
+                return graph;
             }
-        );
-    };
 
-    // Get the sales listings for this item in the market, with more information.
-    //
-    //{
-    //"success" : 1,
-    //"sell_order_table" : "<table class=\"market_commodity_orders_table\"><tr><th align=\"right\">Price<\/th><th align=\"right\">Quantity<\/th><\/tr><tr><td align=\"right\" class=\"\">0,04\u20ac<\/td><td align=\"right\">311<\/td><\/tr><tr><td align=\"right\" class=\"\">0,05\u20ac<\/td><td align=\"right\">895<\/td><\/tr><tr><td align=\"right\" class=\"\">0,06\u20ac<\/td><td align=\"right\">495<\/td><\/tr><tr><td align=\"right\" class=\"\">0,07\u20ac<\/td><td align=\"right\">174<\/td><\/tr><tr><td align=\"right\" class=\"\">0,08\u20ac<\/td><td align=\"right\">49<\/td><\/tr><tr><td align=\"right\" class=\"\">0,09\u20ac or more<\/td><td align=\"right\">41<\/td><\/tr><\/table>",
-    //"sell_order_summary" : "<span class=\"market_commodity_orders_header_promote\">1965<\/span> for sale starting at <span class=\"market_commodity_orders_header_promote\">0,04\u20ac<\/span>",
-    //"buy_order_table" : "<table class=\"market_commodity_orders_table\"><tr><th align=\"right\">Price<\/th><th align=\"right\">Quantity<\/th><\/tr><tr><td align=\"right\" class=\"\">0,03\u20ac<\/td><td align=\"right\">93<\/td><\/tr><\/table>",
-    //"buy_order_summary" : "<span class=\"market_commodity_orders_header_promote\">93<\/span> requests to buy at <span class=\"market_commodity_orders_header_promote\">0,03\u20ac<\/span> or lower",
-    //"highest_buy_order" : "3",
-    //"lowest_sell_order" : "4",
-    //"buy_order_graph" : [[0.03, 93, "93 buy orders at 0,03\u20ac or higher"]],
-    //"sell_order_graph" : [[0.04, 311, "311 sell orders at 0,04\u20ac or lower"], [0.05, 1206, "1,206 sell orders at 0,05\u20ac or lower"], [0.06, 1701, "1,701 sell orders at 0,06\u20ac or lower"], [0.07, 1875, "1,875 sell orders at 0,07\u20ac or lower"], [0.08, 1924, "1,924 sell orders at 0,08\u20ac or lower"], [0.09, 1934, "1,934 sell orders at 0,09\u20ac or lower"], [0.1, 1936, "1,936 sell orders at 0,10\u20ac or lower"], [0.11, 1937, "1,937 sell orders at 0,11\u20ac or lower"], [0.12, 1944, "1,944 sell orders at 0,12\u20ac or lower"], [0.14, 1945, "1,945 sell orders at 0,14\u20ac or lower"]],
-    //"graph_max_y" : 3000,
-    //"graph_min_x" : 0.03,
-    //"graph_max_x" : 0.14,
-    //"price_prefix" : "",
-    //"price_suffix" : "\u20ac"
-    //}
-    SteamMarket.prototype.getItemOrdersHistogram = function (item, cache, callback) {
+            for (let i = 0; i < compactOrders.length; i += 2) {
+                const price = parseInt(compactOrders[i], 10);
+                const quantity = parseInt(compactOrders[i + 1], 10);
+
+                if (isNaN(price) || isNaN(quantity)) {
+                    continue;
+                }
+
+                graph.push([
+                    price / 100,
+                    quantity,
+                    ''
+                ]);
+            }
+
+            return graph;
+        };
+
+        return {
+            success: 1,
+            highest_buy_order: orderBook.amtMaxBuyOrder != null ? parseInt(orderBook.amtMaxBuyOrder, 10) : 0,
+            lowest_sell_order: orderBook.amtMinSellOrder != null ? parseInt(orderBook.amtMinSellOrder, 10) : 0,
+            buy_order_graph: buildGraph(orderBook.rgCompactBuyOrders),
+            sell_order_graph: buildGraph(orderBook.rgCompactSellOrders),
+            cBuyOrders: orderBook.cBuyOrders,
+            cSellOrders: orderBook.cSellOrders,
+            eCurrency: orderBook.eCurrency
+        };
+    }
+
+    // Get the order book for this item in the market, with more information.
+    SteamMarket.prototype.getOrderBook = function (item, cache, callback) {
         try {
             const market_name = getMarketHashName(item);
             if (market_name == null) {
@@ -907,20 +893,20 @@
             const appid = item.appid;
 
             if (cache) {
-                const storage_hash = `itemordershistogram_${appid}+${market_name}`;
+                const storage_hash = `orderbook_${appid}+${market_name}`;
                 storageSession.getItem(storage_hash).
                     then((value) => {
                         if (value != null) {
                             callback(ERROR_SUCCESS, value, true);
                         } else {
-                            market.getCurrentItemOrdersHistogram(item, market_name, callback);
+                            market.getCurrentOrderBook(item, market_name, callback);
                         }
                     }).
                     catch(() => {
-                        market.getCurrentItemOrdersHistogram(item, market_name, callback);
+                        market.getCurrentOrderBook(item, market_name, callback);
                     });
             } else {
-                market.getCurrentItemOrdersHistogram(item, market_name, callback);
+                market.getCurrentOrderBook(item, market_name, callback);
             }
 
         } catch {
@@ -928,44 +914,39 @@
         }
     };
 
-    // Get the sales listings for this item in the market, with more information.
-    SteamMarket.prototype.getCurrentItemOrdersHistogram = function (item, market_name, callback) {
-        market.getMarketItemNameId(
-            item,
-            (error, item_nameid) => {
+    // Get the current order book for this item in the market.
+    SteamMarket.prototype.getCurrentOrderBook = function (item, market_name, callback) {
+        const url = `${window.location.origin}/market/orderbook`;
+
+        const options = {
+            method: 'GET',
+            data: {
+                q: 'Load',
+                qp: JSON.stringify([item.appid, market_name])
+            },
+            responseType: 'json'
+        };
+
+        request(
+            url,
+            options,
+            (error, data) => {
                 if (error) {
-                    callback(ERROR_FAILED);
+                    callback(ERROR_FAILED, null);
                     return;
                 }
 
-                const url = `${window.location.origin}/market/itemordershistogram`;
+                const orderbook = buildOrderBook(data);
+                if (orderbook == null) {
+                    callback(ERROR_DATA, null);
+                    return;
+                }
 
-                const options = {
-                    method: 'GET',
-                    data: {
-                        country: country,
-                        language: 'english',
-                        currency: currencyId,
-                        item_nameid: item_nameid,
-                    }
-                };
+                // Store the order book in the session storage.
+                const storage_hash = `orderbook_${item.appid}+${market_name}`;
+                storageSession.setItem(storage_hash, orderbook);
 
-                request(
-                    url,
-                    options,
-                    (error, data) => {
-                        if (error) {
-                            callback(ERROR_FAILED, null);
-                            return;
-                        }
-
-                        // Store the histogram in the session storage.
-                        const storage_hash = `itemordershistogram_${item.appid}+${market_name}`;
-                        storageSession.setItem(storage_hash, data);
-
-                        callback(ERROR_SUCCESS, data, false);
-                    }
-                )
+                callback(ERROR_SUCCESS, orderbook, false);
             }
         );
     };
@@ -1228,6 +1209,10 @@
     }
 
     // Strangely named function, it actually works out the fees and buyer price for a seller price
+    // Updated for December 2025 Steam Market rule changes:
+    // - 12 specific currencies now use round instead of floor for fees
+    // - Global minimum fee increased to $0.01 for both Steam fee and publisher fee
+    // Reference: https://steamcommunity.com/groups/community_market/discussions/0/682988196226679356/
     function CalculateAmountToSendForDesiredReceivedAmount(receivedAmount, publisherFee, walletInfo) {
         if (walletInfo == null || !walletInfo['wallet_fee']) {
             return {
@@ -1235,13 +1220,33 @@
             };
         }
 
+        // Select the appropriate rounding function based on currency.
+        const roundFee = useRound ? Math.round : Math.floor;
+
+        // December 2025 change: Both Steam fee and publisher fee now have a minimum of $0.01.
+        // The wallet_fee_minimum from Steam represents $0.01 in the user's local currency.
+        // Previously, publisher fee minimum was hardcoded to 1 (the smallest currency unit),
+        // but now it should also be at least $0.01 equivalent in local currency.
+        const minFee = walletInfo['wallet_fee_minimum'] || 1;
+
         publisherFee = publisherFee == null ? 0 : publisherFee;
-        const nSteamFee = parseInt(Math.floor(Math.max(
-            receivedAmount * parseFloat(walletInfo['wallet_fee_percent']),
-            walletInfo['wallet_fee_minimum']
-        ) +
-            parseInt(walletInfo['wallet_fee_base'])));
-        const nPublisherFee = parseInt(Math.floor(publisherFee > 0 ? Math.max(receivedAmount * publisherFee, 1) : 0));
+
+        // IMPORTANT: Apply rounding/flooring BEFORE comparing with minimum fee.
+        // Correct order per Steam's December 2025 rule changes:
+        // 1. Calculate percentage fee (e.g., 0.05 * receivedAmount)
+        // 2. Add base fee (usually 0)
+        // 3. Apply round/floor based on currency
+        // 4. Compare with minimum fee and take maximum
+        const nSteamFee = Math.max(
+            parseInt(roundFee(receivedAmount * parseFloat(walletInfo['wallet_fee_percent']) + parseInt(walletInfo['wallet_fee_base']))),
+            minFee
+        );
+
+        // Publisher fee: same logic, round/floor first, then compare with minFee
+        const nPublisherFee = publisherFee > 0 ? Math.max(
+            parseInt(roundFee(receivedAmount * publisherFee)),
+            minFee
+        ) : 0;
         const nAmountToSend = receivedAmount + nSteamFee + nPublisherFee;
         return {
             steam_fee: nSteamFee,
@@ -1913,12 +1918,12 @@
                         }
                     }
 
-                    market.getItemOrdersHistogram(
+                    market.getOrderBook(
                         item,
                         true,
-                        (err, histogram, cachedListings) => {
+                        (err, orderbook, cachedListings) => {
                             if (err) {
-                                logConsole(`Failed to get orders histogram for ${itemName}`);
+                                logConsole(`Failed to get order book for ${itemName}`);
 
                                 if (err != ERROR_SUCCESS) {
                                     failed += 1;
@@ -1934,7 +1939,7 @@
 
                             const sellPrice = calculateSellPriceBeforeFees(
                                 history,
-                                histogram,
+                                orderbook,
                                 true,
                                 priceInfo.minPriceBeforeFees,
                                 priceInfo.maxPriceBeforeFees
@@ -2231,12 +2236,12 @@
             const baseLink = $(`a[href^="${marketLink}"]`, item_info);
             const ownerActions = baseLink.parent().parent();
 
-            market.getItemOrdersHistogram(
+            market.getOrderBook(
                 item,
                 false,
-                (err, histogram) => {
+                (err, orderbook) => {
                     if (err) {
-                        logConsole(`Failed to get orders histogram for ${selectedItem.name || selectedItem.description.name}`);
+                        logConsole(`Failed to get order book for ${selectedItem.name || selectedItem.description.name}`);
                         return;
                     }
 
@@ -2245,32 +2250,40 @@
                         return;
                     }
 
+                    const sellRows = (orderbook.sell_order_graph || []).map(([price, qty]) =>
+                        `<tr><td align="right">${formatPrice(Math.round(price * 100))}</td><td align="right">${qty}</td></tr>`
+                    ).join('');
+
+                    const buyRows = (orderbook.buy_order_graph || []).map(([price, qty]) =>
+                        `<tr><td align="right">${formatPrice(Math.round(price * 100))}</td><td align="right">${qty}</td></tr>`
+                    ).join('');
+
                     const groupMain = $(`<div id="listings_group">
                         <div>
                             <div id="listings_sell">Sell</div>
-                            ${histogram.sell_order_table}
+                            <table class="market_commodity_orders_table"><tr><th align="right">Price</th><th align="right">Quantity</th></tr>${sellRows}</table>
                         </div>
                         <div>
                             <div id="listings_buy">Buy</div>
-                            ${histogram.buy_order_table}
+                            <table class="market_commodity_orders_table"><tr><th align="right">Price</th><th align="right">Quantity</th></tr>${buyRows}</table>
                         </div>
                     </div>`);
 
-                    baseLink.parent().next().append(groupMain);
+                    baseLink.next().append(groupMain);
 
                     // Generate quick sell buttons.
                     let prices = [];
 
-                    if (histogram != null && histogram.highest_buy_order != null) {
-                        prices.push(parseInt(histogram.highest_buy_order));
+                    if (orderbook != null && orderbook.highest_buy_order != null) {
+                        prices.push(parseInt(orderbook.highest_buy_order));
                     }
 
-                    if (histogram != null && histogram.lowest_sell_order != null) {
+                    if (orderbook != null && orderbook.lowest_sell_order != null) {
                         // Transaction volume must be separable into three or more parts (no matter if equal): valve+publisher+seller.
-                        if (parseInt(histogram.lowest_sell_order) > 3) {
-                            prices.push(parseInt(histogram.lowest_sell_order) - 1);
+                        if (parseInt(orderbook.lowest_sell_order) > 3) {
+                            prices.push(parseInt(orderbook.lowest_sell_order) - 1);
                         }
-                        prices.push(parseInt(histogram.lowest_sell_order));
+                        prices.push(parseInt(orderbook.lowest_sell_order));
                     }
 
                     prices = prices.filter((v, i) => prices.indexOf(v) === i).sort((a, b) => a - b);
@@ -2289,7 +2302,7 @@
                     ownerActions.append(buttons);
 
                     ownerActions.append(`<div id="sell_button" style="display:flex">
-                        <input id="quick_sell_input" style="background-color: black;color: white;border: transparent;max-width:65px;text-align:center;" type="number" value="${histogram.lowest_sell_order / 100}" step="0.01" />&nbsp;
+                        <input id="quick_sell_input" style="background-color: black;color: white;border: transparent;max-width:65px;text-align:center;" type="number" value="${((orderbook.lowest_sell_order || 0) / 100).toFixed(2)}" step="0.01" />&nbsp;
                         <a class="item_market_action_button item_market_action_button_green quick_sell_custom">
                             <span class="item_market_action_button_edge item_market_action_button_left"></span>
                             <span class="item_market_action_button_contents">➜ Sell</span>
@@ -2548,12 +2561,12 @@
             const itemName = item.name || item.description.name;
 
             // Only get the market orders here, the history is not important to visualize the current prices.
-            market.getItemOrdersHistogram(
+            market.getOrderBook(
                 item,
                 true,
-                (err, histogram, cachedListings) => {
+                (err, orderbook, cachedListings) => {
                     if (err) {
-                        logConsole(`Failed to get orders histogram for ${itemName}`);
+                        logConsole(`Failed to get order book for ${itemName}`);
 
                         if (err != ERROR_SUCCESS) {
                             failed += 1;
@@ -2564,7 +2577,7 @@
                         return callback(false, cachedListings);
                     }
 
-                    const sellPrice = calculateSellPriceBeforeFees(null, histogram, false, 0, 65535);
+                    const sellPrice = calculateSellPriceBeforeFees(null, orderbook, false, 0, 65535);
 
                     const itemPrice = sellPrice == 65535
                         ? '∞'
@@ -2725,14 +2738,14 @@
                         }
                     }
 
-                    market.getItemOrdersHistogram(
+                    market.getOrderBook(
                         item,
                         true,
-                        (errorHistogram, histogram, cachedListings) => {
-                            if (errorHistogram) {
-                                logConsole(`Failed to get orders histogram for ${game_name}`);
+                        (errorOrderBook, orderbook, cachedListings) => {
+                            if (errorOrderBook) {
+                                logConsole(`Failed to get order book for ${game_name}`);
 
-                                if (errorHistogram != ERROR_SUCCESS) {
+                                if (errorOrderBook != ERROR_SUCCESS) {
                                     failed += 1;
                                 }
                             }
@@ -2742,10 +2755,10 @@
                             }
 
                             // Shows the highest buy order price on the market listings.
-                            // The 'histogram.highest_buy_order' is not reliable as Steam is caching this value, but it gives some idea for older titles/listings.
-                            const highestBuyOrderPrice = histogram == null || histogram.highest_buy_order == null
+                            // The 'orderbook.highest_buy_order' is not reliable as Steam is caching this value, but it gives some idea for older titles/listings.
+                            const highestBuyOrderPrice = orderbook == null || orderbook.highest_buy_order == null
                                 ? '-'
-                                : formatPrice(histogram.highest_buy_order);
+                                : formatPrice(orderbook.highest_buy_order);
                             $(
                                 '.market_table_value > span:nth-child(1) > span:nth-child(1) > span:nth-child(1)',
                                 listingUI
@@ -2763,14 +2776,14 @@
 
                             const sellPriceWithoutOffset = calculateSellPriceBeforeFees(
                                 history,
-                                histogram,
+                                orderbook,
                                 false,
                                 priceInfo.minPriceBeforeFees,
                                 priceInfo.maxPriceBeforeFees
                             );
                             const sellPriceWithOffset = calculateSellPriceBeforeFees(
                                 history,
-                                histogram,
+                                orderbook,
                                 true,
                                 priceInfo.minPriceBeforeFees,
                                 priceInfo.maxPriceBeforeFees
@@ -3715,7 +3728,44 @@
             $('#see_settings').on('click', '*', () => openSettings());
 
             processMarketListings();
+            initializeMarketHistoryUI();
         }
+    }
+
+    // Initialize the market history UI.
+    function initializeMarketHistoryUI() {
+        // Use jquery-observe (already included in SEE) to listen for AJAX DOM updates
+        $('#tabContentsMyMarketHistory').observe('childlist subtree', () => {
+            const controlsDiv = $('#tabContentsMyMarketHistory_controls');
+
+            // Ensure the controls exist and we haven't already injected our jumper
+            if (controlsDiv.length > 0 && $('#see_page_jump').length === 0) {
+                const jumpContainer = $('<span id="see_page_jump"></span>');
+                const input = $('<input type="number" min="1" placeholder="Page" />');
+                const btn = $('<span class="btn_green_white_innerfade btn_small" style="cursor: pointer;"><span>Jump</span></span>');
+
+                jumpContainer.append(input).append(btn);
+                controlsDiv.append(jumpContainer);
+
+                btn.on('click', () => {
+                    const targetPage = parseInt(input.val());
+                    if (isNaN(targetPage) || targetPage < 1) {
+                        return; // Fail silently
+                    }
+                    const targetIndex = targetPage - 1;
+
+                    if (typeof unsafeWindow.g_oMyHistory !== 'undefined') {
+                        unsafeWindow.g_oMyHistory.GoToPage(targetIndex);
+                    }
+                });
+
+                input.on('keypress', (e) => {
+                    if (e.which === 13) { // Enter key
+                        btn.click();
+                    }
+                });
+            }
+        });
     }
     //#endregion
 
@@ -4078,6 +4128,9 @@
         #see_settings_modal select, #see_settings_modal input[type="number"] { background-color: black; color: white; border: transparent; padding: 4px 8px; }
         #see_settings_modal input[type="number"] { width: 100px; }
         #see_settings_modal input[type="checkbox"] { width: 16px; height: 16px; vertical-align: middle; accent-color: #000; }
+
+        #see_page_jump { margin-left: 15px; display: inline-block; }
+        #see_page_jump > input { width: 60px; margin-right: 8px; background-color: #1b2838; color: #fff; border: 1px solid #4582a5; padding: 2px 5px; }
     `);
 
     $(document).ready(() => {
