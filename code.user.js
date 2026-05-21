@@ -531,7 +531,7 @@
 
 
         // In case there's a buy order higher than the calculated price.
-        if (typeof orderbook !== 'undefined' && orderbook != null && orderbook.highest_buy_order != null) {
+        if (!shouldUseAverage && typeof orderbook !== 'undefined' && orderbook != null && orderbook.highest_buy_order != null) {
             const buyOrderPrice = market.getPriceBeforeFees(orderbook.highest_buy_order);
             if (buyOrderPrice > calculatedPrice) {
                 calculatedPrice = buyOrderPrice;
